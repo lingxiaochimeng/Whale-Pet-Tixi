@@ -2,16 +2,18 @@ import sys
 import os
 import datetime
 import ollama
+import presets # 导入我们刚建的台词库
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, 
                              QHBoxLayout, QVBoxLayout, QTextEdit)
 from PyQt5.QtGui import QPixmap, QKeySequence
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 
-# ================= 1. 后台请求大模型的线程 =================
+# ... (省略 LLMThread 和 SpeechBubble、ChatInputPanel 的代码，保持不变) ...
+# 为了你能直接复制，我还是把完整代码贴出来
+
 class LLMThread(QThread):
-    # 将原本的 response_ready 改为 chunk_received 用于流式传输
     chunk_received = pyqtSignal(str)
-    finished_signal = pyqtSignal(str)  # 传出完整内容以便存入历史
+    finished_signal = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, messages):
@@ -21,26 +23,20 @@ class LLMThread(QThread):
     def run(self):
         try:
             full_reply = ""
-            # 核心改变：加上 stream=True
             response_stream = ollama.chat(model='qwen2', messages=self.messages, stream=True)
-            
             for chunk in response_stream:
                 content = chunk['message']['content']
                 if content:
                     full_reply += content
-                    self.chunk_received.emit(content) # 每收到一个字就发给前台
-            
+                    self.chunk_received.emit(content)
             self.finished_signal.emit(full_reply)
         except Exception as e:
             self.error_occurred.emit(f"连接模型出错了，请确认 Ollama 是否运行中。\n错误信息: {e}")
 
-
-# ================= 2. 宠物头顶的对话气泡 =================
 class SpeechBubble(QWidget):
     def __init__(self, parent_pet):
         super().__init__()
         self.pet = parent_pet
-        
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
@@ -56,12 +52,10 @@ class SpeechBubble(QWidget):
             }
         """)
         self.label.setWordWrap(True)
-        # 让文字靠上对齐，避免气泡变高时文字乱跑
         self.label.setAlignment(Qt.AlignLeft | Qt.AlignTop) 
         self.label.setMaximumWidth(250)
         self.label.setMaximumHeight(300)
 
-        # 定时自动隐藏气泡
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
         self.hide_timer.timeout.connect(self.hide)
@@ -71,34 +65,27 @@ class SpeechBubble(QWidget):
         self.adjust_and_position()
         self.show()
         self.raise_()
-        self.hide_timer.start(10000) # 默认为显示 10 秒后隐藏
+        self.hide_timer.start(8000) # 预设台词显示 8 秒
 
     def append_text(self, chunk):
-        """流式输出，追加文字并自适应大小"""
         current_text = self.label.text()
         self.label.setText(current_text + chunk)
         self.adjust_and_position()
-        self.hide_timer.start(10000) # 每次增加文字时，重置隐藏倒计时
+        self.hide_timer.start(15000) # 流式输出延长一点时间
 
     def adjust_and_position(self):
-        """根据内容调整大小并重新定位到宠物头上"""
         self.label.adjustSize()
         self.resize(self.label.size())
         self.update_position()
 
     def update_position(self):
-        """专门用于计算位置的函数"""
         if self.isVisible():
             pet_x, pet_y = self.pet.x(), self.pet.y()
             pet_w = self.pet.width()
-            
             bubble_x = pet_x + (pet_w - self.width()) // 2
             bubble_y = pet_y - self.height() - 10
-            
             self.move(bubble_x, bubble_y)
 
-
-# ================= 3. 聊天输入面板 =================
 class ChatInputPanel(QWidget):
     def __init__(self, parent_pet):
         super().__init__()
@@ -106,38 +93,30 @@ class ChatInputPanel(QWidget):
         self.is_resizing = False
         self.resize_start_pos = None
         self.resize_start_height = 0
-        
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        
         self.initUI()
 
     def initUI(self):
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
-
         self.container = QWidget(self)
         self.container.setStyleSheet("background-color: rgba(240, 248, 255, 220); border-radius: 8px;")
-        
         self.h_layout = QHBoxLayout(self.container)
         self.h_layout.setContentsMargins(8, 8, 8, 8)
         self.h_layout.setSpacing(8)
-
         self.btn_settings = QPushButton("⚙️")
         self.btn_settings.setFixedSize(36, 36)
         self.btn_settings.setStyleSheet("QPushButton { font-size: 20px; background-color: transparent; border: none; } QPushButton:hover { background-color: rgba(200, 200, 200, 100); border-radius: 5px; }")
         self.btn_settings.clicked.connect(self.on_settings_clicked)
-        
         self.text_input = QTextEdit()
         self.text_input.setPlaceholderText("和鲸鱼娘说点什么...")
         self.text_input.setStyleSheet("QTextEdit { background-color: white; border: 1px solid #ccc; border-radius: 5px; font-size: 16px; padding: 4px; }")
         self.text_input.installEventFilter(self)
-
         self.h_layout.addWidget(self.btn_settings)
         self.h_layout.addWidget(self.text_input)
         self.main_layout.addWidget(self.container)
-        
         self.setFixedHeight(60)
 
     def adjust_width(self, width):
@@ -189,7 +168,6 @@ class ChatInputPanel(QWidget):
         self.pet.load_image("0.png")
 
 
-# ================= 4. 主宠物窗口 =================
 class WhalePet(QWidget):
     def __init__(self):
         super().__init__()
@@ -198,18 +176,16 @@ class WhalePet(QWidget):
         self.current_state = "0.png"
         self.just_closed_panel = False
         
-        # AI 对话历史记录
         self.chat_history = [
-            {"role": "system", "content": "你是一只可爱的鲸鱼娘女仆，名字叫小蓝。你说话语气活泼、带一点海洋气息（比如偶尔提到尾巴、水），每次回答尽量简短（50字以内）。不要在回复中输出时间。"}
+            {"role": "system", "content": "你是一只可爱的鲸鱼娘女仆，名字叫小蓝。你说话语气活泼、带一点海洋气息，每次回答尽量简短（50字以内）。不要在回复中输出时间。"}
         ]
         self.llm_thread = None
-        self.is_streaming = False # 防止并发请求
+        self.is_streaming = False 
 
         self.initUI()
         
         self.chat_panel = ChatInputPanel(self)
         self.chat_panel.hide()
-        
         self.speech_bubble = SpeechBubble(self)
         self.speech_bubble.hide()
 
@@ -217,10 +193,18 @@ class WhalePet(QWidget):
         self.esc_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self.esc_shortcut.activated.connect(self.close_program)
 
+        # === 新增：定时器和问候 ===
+        # 每隔 5 分钟检查一次是否触发日常台词 (5 * 60 * 1000 毫秒)
+        self.idle_timer = QTimer(self)
+        self.idle_timer.timeout.connect(self.check_idle_dialogue)
+        self.idle_timer.start(5 * 60 * 1000) 
+
+        # 启动后延迟 1.5 秒，弹出时段问候
+        QTimer.singleShot(1500, self.show_greeting)
+
     def initUI(self):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-
         self.label = QLabel(self)
         self.load_image("0.png")
         self.move(1000, 600)
@@ -232,19 +216,29 @@ class WhalePet(QWidget):
         self.resize(pixmap.size())
         self.current_state = image_name
 
+    # === 新增：预设台词交互逻辑 ===
+    def show_greeting(self):
+        greeting = presets.get_time_greeting()
+        self.speech_bubble.show_message(greeting)
+
+    def check_idle_dialogue(self):
+        # 只有在：没在流式输出、没在拖拽、没打开输入面板、且宠物在显示的时候，才说话
+        if not self.is_streaming and not self.is_dragging and not self.chat_panel.isVisible() and self.isVisible():
+            line = presets.get_random_line("daily")
+            self.speech_bubble.show_message(line)
+
     def handle_user_message(self, text):
         if self.is_streaming:
             self.speech_bubble.show_message("等我吃完这口水再问喵！")
             return
 
-        # 如果输入的是预设指令，这里可以后续拦截，目前全部发给 AI
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         user_msg_with_time = f"[当前时间: {now}] {text}"
         self.chat_history.append({"role": "user", "content": user_msg_with_time})
         
         self.is_streaming = True
         self.load_image("think.png")
-        self.speech_bubble.show_message("") # 初始化空气泡准备接收内容
+        self.speech_bubble.show_message("") 
         
         self.llm_thread = LLMThread(self.chat_history)
         self.llm_thread.chunk_received.connect(self.on_ai_chunk)
@@ -253,10 +247,8 @@ class WhalePet(QWidget):
         self.llm_thread.start()
 
     def on_ai_chunk(self, chunk):
-        # 收到第一个字时，马上切换为站立
         if self.current_state == "think.png":
             self.load_image("0.png")
-        # 将文字追加到气泡中
         self.speech_bubble.append_text(chunk)
 
     def on_ai_finished(self, full_reply):
@@ -292,17 +284,23 @@ class WhalePet(QWidget):
             if self.is_dragging:
                 self.move(self.pos() + delta)
                 self.drag_start_pos = event.globalPos()
-                # 核心修复：如果气泡在显示，拖动时让气泡跟着跑
                 if self.speech_bubble.isVisible():
                     self.speech_bubble.update_position()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
-            if not self.is_dragging and not self.just_closed_panel:
-                # 如果正在流式输出，点击不要打断成wave
-                if self.current_state != "think.png" and not self.is_streaming:
-                    self.load_image("wave.png")
-                    QTimer.singleShot(1000, self.restore_idle)
+            if not self.just_closed_panel:
+                if self.is_dragging:
+                    # 拖拽结束时触发拖拽台词
+                    line = presets.get_random_line("drag")
+                    self.speech_bubble.show_message(line)
+                else:
+                    # 单击触发点击台词
+                    if self.current_state != "think.png" and not self.is_streaming:
+                        self.load_image("wave.png")
+                        QTimer.singleShot(1000, self.restore_idle)
+                        line = presets.get_random_line("click")
+                        self.speech_bubble.show_message(line)
             
             self.drag_start_pos = None
             self.is_dragging = False
@@ -323,7 +321,7 @@ class WhalePet(QWidget):
 
     def close_program(self):
         if self.is_streaming and self.llm_thread:
-            self.llm_thread.terminate() # 暴力停止线程
+            self.llm_thread.terminate()
         self.chat_panel.close()
         self.speech_bubble.close()
         self.close()
