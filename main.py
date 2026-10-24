@@ -62,16 +62,18 @@ class SpeechBubble(QWidget):
 
     def show_message(self, text):
         self.label.setText(text)
-        self.adjust_and_position()
+        # === 修复 === 先调用 show 显示窗口
         self.show()
+        # === 修复 === 再调整大小和计算位置
+        self.adjust_and_position()
         self.raise_()
-        self.hide_timer.start(8000) # 预设台词显示 8 秒
+        self.hide_timer.start(8000)
 
     def append_text(self, chunk):
         current_text = self.label.text()
         self.label.setText(current_text + chunk)
         self.adjust_and_position()
-        self.hide_timer.start(15000) # 流式输出延长一点时间
+        self.hide_timer.start(15000)
 
     def adjust_and_position(self):
         self.label.adjustSize()
@@ -79,12 +81,12 @@ class SpeechBubble(QWidget):
         self.update_position()
 
     def update_position(self):
-        if self.isVisible():
-            pet_x, pet_y = self.pet.x(), self.pet.y()
-            pet_w = self.pet.width()
-            bubble_x = pet_x + (pet_w - self.width()) // 2
-            bubble_y = pet_y - self.height() - 10
-            self.move(bubble_x, bubble_y)
+        # === 修复 === 去掉了 if self.isVisible(): 限制，强制计算位置
+        pet_x, pet_y = self.pet.x(), self.pet.y()
+        pet_w = self.pet.width()
+        bubble_x = pet_x + (pet_w - self.width()) // 2
+        bubble_y = pet_y - self.height() - 10
+        self.move(bubble_x, bubble_y)
 
 class ChatInputPanel(QWidget):
     def __init__(self, parent_pet):
