@@ -77,6 +77,17 @@ class SettingsDialog(QDialog):
         elif freq == 5: self.combo_freq.setCurrentIndex(1)
         elif freq == 10: self.combo_freq.setCurrentIndex(2)
         layout.addWidget(self.combo_freq)
+        
+        # 4. 漫游频率
+        layout.addWidget(QLabel("桌面漫游频率 (走动):"))
+        self.combo_wander = QComboBox()
+        self.combo_wander.addItems(["关闭", "30 秒", "60 秒", "120 秒"])
+        wander_sec = self.config.get("wander_freq_seconds", 60)
+        if wander_sec == 0: self.combo_wander.setCurrentIndex(0)
+        elif wander_sec == 30: self.combo_wander.setCurrentIndex(1)
+        elif wander_sec == 60: self.combo_wander.setCurrentIndex(2)
+        elif wander_sec == 120: self.combo_wander.setCurrentIndex(3)
+        layout.addWidget(self.combo_wander)
         layout.addStretch()
 
     def load_models(self):
@@ -140,26 +151,20 @@ class SettingsDialog(QDialog):
         layout.addWidget(btn_exit)
 
     def save_and_apply(self):
-        # 检查模型名是否为空
         model_name = self.combo_model.currentText().strip()
         if not model_name:
             QMessageBox.warning(self, "警告", "模型名称不能为空！请选择或输入正确的模型名。")
             return
-    
-        # 1. 模型
+
         self.config["model_name"] = model_name
+        self.config["pet_size"] = self.slider_size.value() / 100.0
+        self.config["daily_freq_minutes"] = [1, 5, 10][self.combo_freq.currentIndex()]
         
-        # 2. 大小
-        new_size = self.slider_size.value() / 100.0
-        self.config["pet_size"] = new_size
+        # === 新增：保存漫游频率 ===
+        wander_idx = self.combo_wander.currentIndex()
+        self.config["wander_freq_seconds"] = [0, 30, 60, 120][wander_idx]
         
-        # 3. 频率
-        freq_idx = self.combo_freq.currentIndex()
-        self.config["daily_freq_minutes"] = [1, 5, 10][freq_idx]
-        
-        # 4. Prompt
         self.config["system_prompt"] = self.text_prompt.toPlainText()
         
-        # 通知主窗口应用更改
         self.parent_pet.apply_settings()
         self.close()

@@ -1,6 +1,8 @@
 import sys
 import os
 import re
+import math
+import random
 import datetime
 import ollama
 import presets
@@ -196,6 +198,16 @@ class WhalePet(QWidget):
         self.current_state = "0.png"
         self.just_closed_panel = False
         self.is_streaming = False 
+        self.walk_target = None      # 目标坐标 (x, y)
+        self.walk_frame_toggle = False # 走路动画帧切换标志
+        
+        # 漫游触发定时器
+        self.wander_timer = QTimer(self)
+        self.wander_timer.timeout.connect(self.start_wandering)
+        
+        # 走路动作定时器 (控制步频和动画)
+        self.walk_timer = QTimer(self)
+        self.walk_timer.timeout.connect(self.walk_step)
         self.llm_thread = None
 
         self.initUI()
@@ -240,24 +252,27 @@ class WhalePet(QWidget):
         self.current_state = image_name
 
     def apply_settings(self, is_startup=False):
-        """当设置被保存或启动时，应用新配置"""
-        
-        app_config.save_config(self.config) # 确保文件存在
+        app_config.save_config(self.config) 
         
         if not is_startup:
-            # 重新加载当前图片以应用新大小
             self.load_image(self.current_state if self.current_state != "think.png" else "0.png")
             self.speech_bubble.show_message("设置已保存喵~")
 
-        # 重新设置日常定时器
+        # 日常台词定时器
         if hasattr(self, 'idle_timer'):
             self.idle_timer.stop()
         else:
             self.idle_timer = QTimer(self)
             self.idle_timer.timeout.connect(self.check_idle_dialogue)
-        
         freq_ms = self.config.get("daily_freq_minutes", 5) * 60 * 1000
         self.idle_timer.start(freq_ms)
+        
+        # === 新增：漫游定时器应用 ===
+        wander_sec = self.config.get("wander_freq_seconds", 60)
+        if wander_sec > 0:
+            self.wander_timer.start(wander_sec * 1000)
+        else:
+            self.wander_timer.stop()
 
     def show_greeting(self):
         greeting = presets.get_time_greeting()
@@ -311,6 +326,10 @@ class WhalePet(QWidget):
 
     # ================= 鼠标事件 =================
     def mousePressEvent(self, event):
+        # === 新增：如果正在走路，点击时立刻停下 ===
+        if self.walk_timer.isActive():
+            self.stop_walking()
+
         if self.chat_panel.isVisible():
             self.chat_panel.hide()
             self.restore_idle()
@@ -355,6 +374,74 @@ class WhalePet(QWidget):
     def restore_idle(self):
         if self.current_state in ["wave.png", "walk1.png", "walk2.png", "wait.png"]:
             self.load_image("0.png")
+
+    def start_wandering(self):
+        """触发漫游：生成随机目标点并开始走动"""
+        # 只有在站立状态、没拖拽、没聊天、面板没开的时候才走
+        if self.current_state != "0.png" or self.is_dragging or self.is_streaming or self.chat_panel.isVisible():
+            return
+            
+        # 获取屏幕可用区域 (排除任务栏)
+        screen_geo = QApplication.desktop().availableGeometry()
+        
+        # 随机生成一个目标点 (留出窗口大小的边距)
+        max_x = screen_geo.width() - self.width()
+        max_y = screen_geo.height() - self.height()
+        
+        target_x = random.randint(0, max_x)
+        target_y = random.randint(0, max_y)
+        self.walk_target = (target_x, target_y)
+        
+        self.walk_frame_toggle = False
+        self.walk_timer.start(100) # 每 100 毫秒走一步
+
+    def walk_step(self):
+        """向目标点移动的步进逻辑"""
+        if not self.walk_target:
+            self.walk_timer.stop()
+            return
+            
+        curr_x, curr_y = self.x(), self.y()
+        target_x, target_y = self.walk_target
+        
+        # 计算距离
+        dx = target_x - curr_x
+        dy = target_y - curr_y
+        dist = math.hypot(dx, dy) # 直线距离
+        
+        # 如果快到了（距离小于 10 像素），直接瞬移过去并停下
+        if dist < 10:
+            self.move(target_x, target_y)
+            self.stop_walking()
+            return
+            
+        # 每次移动的速度（比如每帧移动 8 像素）
+        speed = 8
+        step_x = int(dx / dist * speed)
+        step_y = int(dy / dist * speed)
+        
+        # 如果速度取整后是 0，强制设为 1 避免卡住
+        step_x = step_x if step_x != 0 else (1 if dx > 0 else -1)
+        step_y = step_y if step_y != 0 else (1 if dy > 0 else -1)
+        
+        self.move(curr_x + step_x, curr_y + step_y)
+        
+        # 气泡跟随
+        if self.speech_bubble.isVisible():
+            self.speech_bubble.update_position()
+            
+        # 切换走路动画帧
+        self.walk_frame_toggle = not self.walk_frame_toggle
+        if self.walk_frame_toggle:
+            self.load_image("walk1.png")
+        else:
+            self.load_image("walk2.png")
+
+    def stop_walking(self):
+        """停止走路，恢复站立"""
+        self.walk_timer.stop()
+        self.walk_target = None
+        self.load_image("0.png")
 
     def show_chat_panel(self):
         self.chat_panel.adjust_width(self.width())
