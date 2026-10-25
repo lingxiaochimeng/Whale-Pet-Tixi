@@ -48,6 +48,28 @@ class LLMThread(QThread):
         except Exception as e:
             self.error_occurred.emit(f"连接模型出错了，请确认 Ollama 是否运行中。\n错误信息: {e}")
 
+class SummaryThread(QThread):
+    summary_ready = pyqtSignal(str, int) # 传出 (总结内容, 被清理的消息数量)
+
+    def __init__(self, messages, model_name):
+        super().__init__()
+        self.messages = messages
+        self.model_name = model_name
+
+    def run(self):
+        try:
+            # 构造总结专用的提示词
+            prompt = [
+                {"role": "system", "content": "你是一个记忆总结助手。请用一段话简明扼要地总结以下对话的核心内容，保留用户偏好、重要事件或关键设定。字数控制在100字以内。"},
+                {"role": "user", "content": str(self.messages)}
+            ]
+            # 这里不需要流式输出，一次性拿结果
+            response = ollama.chat(model=self.model_name, messages=prompt)
+            summary = response['message']['content']
+            self.summary_ready.emit(summary, len(self.messages))
+        except Exception as e:
+            print(f"总结失败: {e}")
+
 # ================= 2. 宠物头顶的对话气泡 =================
 class SpeechBubble(QWidget):
     def __init__(self, parent_pet):
@@ -317,7 +339,39 @@ class WhalePet(QWidget):
         self.is_streaming = False
         self.load_image("0.png")
         self.config["history"].append({"role": "assistant", "content": full_reply})
-        app_config.save_config(self.config) # 保存 AI 回复
+        app_config.save_config(self.config)
+        
+        # === 新增：检查是否需要总结 ===
+        # 一轮对话 = 2条消息 (user + assistant)。20轮 = 40条消息。
+        # 如果超过 40 条，我们就清理最前面的 20 条（10轮）
+        if len(self.config["history"]) > 40:
+            self.trigger_summary()
+
+    def trigger_summary(self):
+        """提取前10轮对话进行总结"""
+        # 取出最前面的 20 条消息（10轮）
+        old_messages = self.config["history"][:20]
+        
+        # 开始后台总结
+        self.summary_thread = SummaryThread(old_messages, self.config["model_name"])
+        self.summary_thread.summary_ready.connect(self.on_summary_completed)
+        self.summary_thread.start()
+
+    def on_summary_completed(self, summary_text, cleaned_count):
+        """总结完成，清理旧记录并拼接 Prompt"""
+        # 1. 从历史记录中删除最前面的 messages
+        del self.config["history"][:cleaned_count]
+        
+        # 2. 把摘要拼接到 system_prompt 后面
+        base_prompt = self.config["system_prompt"].split("\n\n【前情摘要】")[0] # 防止无限叠加
+        self.config["system_prompt"] = base_prompt + f"\n\n【前情摘要】{summary_text}"
+        
+        # 3. 保存配置
+        app_config.save_config(self.config)
+        
+        # 4. 可选：给个气泡提示（为了不突兀，可以在后台默默完成，这里我加个小提示）
+        # self.speech_bubble.show_message("（我把之前的记忆压缩了一下~）")
+        print(f"【系统】记忆压缩完成，清理了 {cleaned_count} 条旧消息。摘要：{summary_text}")
 
     def on_ai_error(self, error_msg):
         self.is_streaming = False
