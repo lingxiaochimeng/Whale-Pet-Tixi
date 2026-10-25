@@ -1,38 +1,52 @@
 import sys
 import os
+import re
 import datetime
 import ollama
-import presets # 导入我们刚建的台词库
+import presets
+import config as app_config
+from settings_dialog import SettingsDialog
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, 
                              QHBoxLayout, QVBoxLayout, QTextEdit)
 from PyQt5.QtGui import QPixmap, QKeySequence
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 
-# ... (省略 LLMThread 和 SpeechBubble、ChatInputPanel 的代码，保持不变) ...
-# 为了你能直接复制，我还是把完整代码贴出来
-
+# ================= 1. 后台请求大模型的线程 =================
 class LLMThread(QThread):
     chunk_received = pyqtSignal(str)
     finished_signal = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, messages):
+    def __init__(self, messages, model_name):
         super().__init__()
         self.messages = messages
+        self.model_name = model_name
 
     def run(self):
         try:
             full_reply = ""
-            response_stream = ollama.chat(model='qwen2', messages=self.messages, stream=True)
+            response_stream = ollama.chat(model=self.model_name, messages=self.messages, stream=True)
+            
             for chunk in response_stream:
-                content = chunk['message']['content']
+                # 使用 .get 防止某些空包返回 None 导致报错
+                content = chunk.get('message', {}).get('content', '')
+                if not content:
+                    continue
+                
+                # 稳妥的过滤逻辑：如果包含思考标签，用正则把 思考... 过滤掉
+                if '思考' in content or '思考' in content:
+                    content = re.sub(r'思考.*?(思考|$)', '', content, flags=re.DOTALL)
+                    content = content.replace('思考', '').replace('', '')
+                
                 if content:
                     full_reply += content
                     self.chunk_received.emit(content)
+                    
             self.finished_signal.emit(full_reply)
         except Exception as e:
             self.error_occurred.emit(f"连接模型出错了，请确认 Ollama 是否运行中。\n错误信息: {e}")
 
+# ================= 2. 宠物头顶的对话气泡 =================
 class SpeechBubble(QWidget):
     def __init__(self, parent_pet):
         super().__init__()
@@ -62,9 +76,7 @@ class SpeechBubble(QWidget):
 
     def show_message(self, text):
         self.label.setText(text)
-        # === 修复 === 先调用 show 显示窗口
         self.show()
-        # === 修复 === 再调整大小和计算位置
         self.adjust_and_position()
         self.raise_()
         self.hide_timer.start(8000)
@@ -81,13 +93,13 @@ class SpeechBubble(QWidget):
         self.update_position()
 
     def update_position(self):
-        # === 修复 === 去掉了 if self.isVisible(): 限制，强制计算位置
         pet_x, pet_y = self.pet.x(), self.pet.y()
         pet_w = self.pet.width()
         bubble_x = pet_x + (pet_w - self.width()) // 2
         bubble_y = pet_y - self.height() - 10
         self.move(bubble_x, bubble_y)
 
+# ================= 3. 聊天输入面板 =================
 class ChatInputPanel(QWidget):
     def __init__(self, parent_pet):
         super().__init__()
@@ -168,21 +180,23 @@ class ChatInputPanel(QWidget):
     def on_settings_clicked(self):
         self.hide()
         self.pet.load_image("0.png")
+        # 打开独立设置窗口
+        dialog = SettingsDialog(self.pet)
+        dialog.exec_()
 
 
+# ================= 4. 主宠物窗口 =================
 class WhalePet(QWidget):
     def __init__(self):
         super().__init__()
+        self.config = app_config.load_config() # 加载配置
+        
         self.is_dragging = False
         self.drag_start_pos = None
         self.current_state = "0.png"
         self.just_closed_panel = False
-        
-        self.chat_history = [
-            {"role": "system", "content": "你是一只可爱的鲸鱼娘女仆，名字叫小蓝。你说话语气活泼、带一点海洋气息，每次回答尽量简短（50字以内）。不要在回复中输出时间。"}
-        ]
-        self.llm_thread = None
         self.is_streaming = False 
+        self.llm_thread = None
 
         self.initUI()
         
@@ -195,36 +209,61 @@ class WhalePet(QWidget):
         self.esc_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self.esc_shortcut.activated.connect(self.close_program)
 
-        # === 新增：定时器和问候 ===
-        # 每隔 5 分钟检查一次是否触发日常台词 (5 * 60 * 1000 毫秒)
-        self.idle_timer = QTimer(self)
-        self.idle_timer.timeout.connect(self.check_idle_dialogue)
-        self.idle_timer.start(5 * 60 * 1000) 
+        # 应用配置 (缩放、定时器等)
+        self.apply_settings(is_startup=True)
 
-        # 启动后延迟 1.5 秒，弹出时段问候
         QTimer.singleShot(1500, self.show_greeting)
 
     def initUI(self):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.label = QLabel(self)
-        self.load_image("0.png")
+        self.load_image("0.png") # <--- 补上这一行！
         self.move(1000, 600)
 
     def load_image(self, image_name):
         path = os.path.join(os.path.dirname(__file__), "assets", image_name)
         pixmap = QPixmap(path)
+        
+        # 根据配置缩放图片
+        size = self.config.get("pet_size", 1.0)
+        if size != 1.0:
+            new_w = int(pixmap.width() * size)
+            new_h = int(pixmap.height() * size)
+            pixmap = pixmap.scaled(new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
         self.label.setPixmap(pixmap)
+        # === 修复截断的关键：同步调整 QLabel 的大小 ===
+        self.label.resize(pixmap.size()) 
+        
         self.resize(pixmap.size())
         self.current_state = image_name
 
-    # === 新增：预设台词交互逻辑 ===
+    def apply_settings(self, is_startup=False):
+        """当设置被保存或启动时，应用新配置"""
+        
+        app_config.save_config(self.config) # 确保文件存在
+        
+        if not is_startup:
+            # 重新加载当前图片以应用新大小
+            self.load_image(self.current_state if self.current_state != "think.png" else "0.png")
+            self.speech_bubble.show_message("设置已保存喵~")
+
+        # 重新设置日常定时器
+        if hasattr(self, 'idle_timer'):
+            self.idle_timer.stop()
+        else:
+            self.idle_timer = QTimer(self)
+            self.idle_timer.timeout.connect(self.check_idle_dialogue)
+        
+        freq_ms = self.config.get("daily_freq_minutes", 5) * 60 * 1000
+        self.idle_timer.start(freq_ms)
+
     def show_greeting(self):
         greeting = presets.get_time_greeting()
         self.speech_bubble.show_message(greeting)
 
     def check_idle_dialogue(self):
-        # 只有在：没在流式输出、没在拖拽、没打开输入面板、且宠物在显示的时候，才说话
         if not self.is_streaming and not self.is_dragging and not self.chat_panel.isVisible() and self.isVisible():
             line = presets.get_random_line("daily")
             self.speech_bubble.show_message(line)
@@ -236,13 +275,19 @@ class WhalePet(QWidget):
 
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         user_msg_with_time = f"[当前时间: {now}] {text}"
-        self.chat_history.append({"role": "user", "content": user_msg_with_time})
+        
+        # 把用户消息加入内存和配置
+        self.config["history"].append({"role": "user", "content": user_msg_with_time})
+        app_config.save_config(self.config) # 每次对话都保存历史
+        
+        # 拼接完整的 messages 列表给 LLM
+        messages = [{"role": "system", "content": self.config["system_prompt"]}] + self.config["history"]
         
         self.is_streaming = True
         self.load_image("think.png")
         self.speech_bubble.show_message("") 
         
-        self.llm_thread = LLMThread(self.chat_history)
+        self.llm_thread = LLMThread(messages, self.config["model_name"])
         self.llm_thread.chunk_received.connect(self.on_ai_chunk)
         self.llm_thread.finished_signal.connect(self.on_ai_finished)
         self.llm_thread.error_occurred.connect(self.on_ai_error)
@@ -256,7 +301,8 @@ class WhalePet(QWidget):
     def on_ai_finished(self, full_reply):
         self.is_streaming = False
         self.load_image("0.png")
-        self.chat_history.append({"role": "assistant", "content": full_reply})
+        self.config["history"].append({"role": "assistant", "content": full_reply})
+        app_config.save_config(self.config) # 保存 AI 回复
 
     def on_ai_error(self, error_msg):
         self.is_streaming = False
@@ -293,11 +339,9 @@ class WhalePet(QWidget):
         if event.button() == Qt.LeftButton:
             if not self.just_closed_panel:
                 if self.is_dragging:
-                    # 拖拽结束时触发拖拽台词
                     line = presets.get_random_line("drag")
                     self.speech_bubble.show_message(line)
                 else:
-                    # 单击触发点击台词
                     if self.current_state != "think.png" and not self.is_streaming:
                         self.load_image("wave.png")
                         QTimer.singleShot(1000, self.restore_idle)
