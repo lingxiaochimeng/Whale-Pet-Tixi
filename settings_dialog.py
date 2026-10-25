@@ -141,7 +141,7 @@ class SettingsDialog(QDialog):
 
     def setup_about_tab(self):
         layout = QVBoxLayout(self.tab_about)
-        text = QLabel("鲸鱼娘桌宠 v1.0\n\n基于 PyQt5 + Ollama 开发\n素材遵循 MIT 协议\n\n按 Esc 键可快速退出程序")
+        text = QLabel("鲸鱼娘桌宠 v1.0\n\n基于 PyQt5 + Ollama 开发\n素材遵循 MIT 协议\n\n按 Ctrl+\\ 快捷键可隐藏/显示宠物\n点击下方按钮可彻底退出程序")
         text.setAlignment(Qt.AlignCenter)
         layout.addWidget(text)
         layout.addStretch()

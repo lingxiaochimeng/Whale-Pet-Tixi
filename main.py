@@ -7,6 +7,7 @@ import datetime
 import ollama
 import presets
 import config as app_config
+import keyboard
 from settings_dialog import SettingsDialog
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, 
                              QHBoxLayout, QVBoxLayout, QTextEdit)
@@ -211,6 +212,9 @@ class ChatInputPanel(QWidget):
 
 # ================= 4. 主宠物窗口 =================
 class WhalePet(QWidget):
+    # === 新增：用于跨线程触发的信号 ===
+    toggle_hotkey_signal = pyqtSignal() 
+
     def __init__(self):
         super().__init__()
         self.config = app_config.load_config() # 加载配置
@@ -239,9 +243,13 @@ class WhalePet(QWidget):
         self.speech_bubble = SpeechBubble(self)
         self.speech_bubble.hide()
 
-        from PyQt5.QtWidgets import QShortcut
-        self.esc_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
-        self.esc_shortcut.activated.connect(self.close_program)
+            # === 修改：使用 keyboard 注册全局快捷键 ===
+        self.toggle_hotkey_signal.connect(self.toggle_visibility)
+        try:
+            # 注册 Ctrl+\ 全局热键，回调触发信号
+            keyboard.add_hotkey('ctrl+\\', lambda: self.toggle_hotkey_signal.emit())
+        except Exception as e:
+            print(f"全局快捷键注册失败: {e}")
 
         # 应用配置 (缩放、定时器等)
         self.apply_settings(is_startup=True)
@@ -506,7 +514,26 @@ class WhalePet(QWidget):
         self.chat_panel.raise_()
         self.chat_panel.text_input.setFocus()
 
+    def toggle_visibility(self):
+        """隐藏或显示宠物"""
+        if self.isVisible():
+            self.hide()
+            self.speech_bubble.hide()
+            if self.chat_panel.isVisible():
+                self.chat_panel.hide()
+        else:
+            self.show()
+            self.raise_()
+            # 尝试激活窗口，确保重新显示时能获取焦点
+            self.activateWindow() 
+
     def close_program(self):
+        # === 新增：退出时清理全局热键钩子 ===
+        try:
+            keyboard.unhook_all()
+        except:
+            pass
+            
         if self.is_streaming and self.llm_thread:
             self.llm_thread.terminate()
         self.chat_panel.close()
